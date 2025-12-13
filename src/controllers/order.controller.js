@@ -87,62 +87,122 @@ exports.getOrderById = async (req, res) => {
 };
 
 // UPDATE ORDER
+
 exports.updateOrder = async (req, res) => {
   try {
     const { error, value } = updateOrderSchema.validate(req.body, {
       abortEarly: false,
       stripUnknown: true,
     });
-
     if (error) {
       return res.status(400).json({
         success: false,
-        errors: error.details.map((d) => d.message),
+        errors: error.details.map((e) => e.message),
       });
     }
-
     const { id, quantity, priceAtOrderTime, ...updateData } = value;
-
-    // Fetch current order if price/quantity changes
-    if (quantity !== undefined || priceAtOrderTime !== undefined) {
-      const existingOrder = await Order.findById(id);
-      if (!existingOrder) {
-        return res.status(404).json({ success: false, message: "Order not found" });
-      }
-
-      const finalQuantity =
-        quantity !== undefined ? quantity : existingOrder.quantity;
-      const finalPrice =
-        priceAtOrderTime !== undefined
-          ? priceAtOrderTime
-          : existingOrder.priceAtOrderTime;
-
-      updateData.quantity = finalQuantity;
-      updateData.priceAtOrderTime = finalPrice;
-      updateData.totalAmount = finalQuantity * finalPrice;
+    const existingOrder = await Order.findById(id);
+    if (!existingOrder) {
+      return res.status(404).json({
+        success: false,
+        message: "Order not found",
+      });
     }
-
-    const updatedOrder = await Order.findByIdAndUpdate(id, updateData, {
-      new: true,
-      runValidators: true,
-    })
+    if (
+      ["Delivered", "Cancelled", "Returned"].includes(
+        existingOrder.orderStatus
+      )
+    ) {
+      return res.status(400).json({
+        success: false,
+        message: `Cannot update a ${existingOrder.orderStatus} order`,
+      });
+    }
+    const finalQuantity =
+      quantity !== undefined ? quantity : existingOrder.quantity;
+    const finalPrice =
+      priceAtOrderTime !== undefined
+        ? priceAtOrderTime
+        : existingOrder.priceAtOrderTime;
+    if (finalQuantity <= 0 || finalPrice < 0) {
+      return res.status(400).json({
+        success: false,
+        message: "Invalid quantity or price",
+      });
+    }
+    updateData.quantity = finalQuantity;
+    updateData.priceAtOrderTime = finalPrice;
+    updateData.totalAmount = finalQuantity * finalPrice;
+    const paymentMode =
+      updateData.paymentMode || existingOrder.paymentMode;
+    if (paymentMode !== "Partial Payment") {
+      updateData.paymentMode = paymentMode;
+      updateData.depositedAmount = 0;
+      updateData.remainingAmount = 0;
+      updateData.paymentStatus =
+        paymentMode === "COD" ? "Pending" : "Paid";
+    }
+    if (paymentMode === "Partial Payment") {
+      const deposited =
+        updateData.depositedAmount ??
+        existingOrder.depositedAmount ??
+        0;
+      if (deposited < 0) {
+        return res.status(400).json({
+          success: false,
+          message: "Deposited amount cannot be negative",
+        });
+      }
+      if (deposited > updateData.totalAmount) {
+        return res.status(400).json({
+          success: false,
+          message: "Deposited amount cannot exceed total amount",
+        });
+      }
+      const remaining =
+        updateData.remainingAmount ??
+        updateData.totalAmount - deposited;
+      if (remaining < 0) {
+        return res.status(400).json({
+          success: false,
+          message: "Remaining amount cannot be negative",
+        });
+      }
+      updateData.paymentMode = "Partial Payment";
+      updateData.depositedAmount = deposited;
+      updateData.remainingAmount = remaining;
+      updateData.paymentStatus =
+        remaining === 0 ? "Paid" : "Pending";
+    }
+    if (updateData.orderStatus === "Delivered") {
+      updateData.paymentStatus = "Paid";
+      updateData.remainingAmount = 0;
+    }
+    const updatedOrder = await Order.findByIdAndUpdate(
+      id,
+      updateData,
+      {
+        new: true,
+        runValidators: true,
+      }
+    )
       .populate("productId", "name price")
       .populate("agentId", "name email");
-
-    if (!updatedOrder) {
-      return res.status(404).json({ success: false, message: "Order not found" });
-    }
 
     res.status(200).json({
       success: true,
       message: "Order updated successfully",
       data: updatedOrder,
     });
-  } catch (error) {
-    console.error("UPDATE ORDER ERROR →", error);
-    res.status(500).json({ success: false, message: "Server error" });
+  } catch (err) {
+    console.error("UPDATE ORDER ERROR →", err);
+    res.status(500).json({
+      success: false,
+      message: "Server error",
+    });
   }
 };
+
 
 // DELETE ORDER
 exports.deleteOrder = async (req, res) => {
