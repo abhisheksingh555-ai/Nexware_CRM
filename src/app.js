@@ -41,7 +41,6 @@ app.use(cookieParser());
 // ];
 
 const allowedOrigins = [
-  "http://localhost:5173",
   "https://nexware-crm-frontend.vercel.app"
 ];
 app.use(
