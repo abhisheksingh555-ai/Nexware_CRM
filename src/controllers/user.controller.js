@@ -91,80 +91,83 @@ exports.getUsers = async (req, res) => {
 ///////////////////// GET MY DETAILS /////////////////////
 exports.getMyDetails = async (req, res) => {
   try {
-    const user = await User.findById(req.user._id).select("-password");
-    if (!user) return res.status(404).json({ message: "User not found" });
-
-    res.json({ success: true, data: user });
+    let query = User.findById(req.user._id).select("-password");
+    query = query.populate({
+      path: "teamHeadId",
+      select: "name email phone role"
+    });
+    const user = await query;
+    if (!user) {
+      return res.status(404).json({ message: "User not found" });
+    }
+    let responseData = user.toObject();
+    if (user.role === "agent" && user.teamHeadId) {
+      responseData.teamHead = {
+        _id: user.teamHeadId._id,
+        name: user.teamHeadId.name,
+        email: user.teamHeadId.email,
+        phone: user.teamHeadId.phone,
+      };
+      delete responseData.teamHeadId;
+    }
+    res.json({
+      success: true,
+      data: responseData
+    });
   } catch (error) {
     console.error("GET MY DETAILS ERROR:", error);
     res.status(500).json({ message: "Server error" });
   }
 };
 
+
 ///////////////////// ADMIN UPDATE ANY USER /////////////////////
 exports.anyUserUpdate = async (req, res) => {
   try {
     const { userId, updates } = req.body;
     const loggedIn = req.user;
-
     if (!loggedIn)
       return res.status(401).json({ message: "Unauthorized" });
-
     if (loggedIn.role !== "admin") {
       return res.status(403).json({ message: "Only admin can update any user" });
     }
-
-    // Not allowed fields
     ["email", "lastLogin", "createdAt", "updatedAt"].forEach((field) => {
       if (updates[field]) delete updates[field];
     });
-
-    // Protect last active admin
     if (updates.status === "inactive") {
       const targetUser = await User.findById(userId);
-
       if (targetUser && targetUser.role === "admin") {
         const activeAdmins = await User.countDocuments({
           role: "admin",
           status: "active",
         });
-
         if (activeAdmins <= 1) {
           return res.status(400).json({ message: "Cannot deactivate the last active admin" });
         }
       }
     }
-
-    // Hash password
     if (updates.password) {
       updates.password = await bcrypt.hash(updates.password, 10);
     }
-
     if (updates.name) updates.name = updates.name.trim();
     if (updates.phone) updates.phone = updates.phone.trim();
-
-    // ⭐ FIX: Remove invalid empty strings to avoid ObjectId casting errors
     Object.keys(updates).forEach(key => {
       if (updates[key] === "" || updates[key] === null) {
         delete updates[key];
       }
     });
-
     const updatedUser = await User.findByIdAndUpdate(
       userId,
       updates,
       { new: true }
     ).select("-password");
-
     if (!updatedUser)
       return res.status(404).json({ message: "User not found" });
-
     return res.json({
       success: true,
       message: "User updated successfully",
       data: updatedUser,
     });
-
   } catch (error) {
     console.error("ANY USER UPDATE ERROR:", error);
     res.status(500).json({ message: "Server error" });
