@@ -18,7 +18,7 @@ exports.createLead = async (req, res) => {
       service,
       address,
       source: source || "",
-      assignedTo,
+      assignedTo: assignedTo || null,
       status: status || "Ring",
       remarks: remarks || "",
       createdBy: req.user._id,
@@ -32,15 +32,27 @@ exports.createLead = async (req, res) => {
   }
 };
 
-// Get all leads
+// Get all leads (with access control)
 exports.getLeads = async (req, res) => {
   try {
-    const leads = await Lead.find()
+    let query = {};
+
+    // Admin can see all leads
+    if (req.user.role !== 'admin') {
+      // Non-admin can see leads where they are assigned or they created it
+      query = {
+        $or: [
+          { assignedTo: req.user._id },
+          { createdBy: req.user._id }
+        ]
+      };
+    }
+
+    const leads = await Lead.find(query)
       .populate("assignedTo", "name email")
       .populate("createdBy", "name email")
       .sort({ createdAt: -1 });
 
-    // Only return minimal fields for dashboard
     const dashboardLeads = leads.map(l => ({
       id: l._id,
       name: l.name,
@@ -56,30 +68,23 @@ exports.getLeads = async (req, res) => {
   }
 };
 
-// Get lead by ID
+// Get lead by ID (with access control)
 exports.getLeadById = async (req, res) => {
   try {
-    let { leadId } = req.query; 
+    let { leadId } = req.query;
+    if (!leadId) return res.status(400).json({ success: false, message: "Lead ID required" });
 
-    if (!leadId) {
-      return res.status(400).json({
-        success: false,
-        message: "Lead ID required",
-      });
-    }
-
-    // Trim and clean ID if needed
     leadId = leadId.toString().trim().replace(/"/g, "");
 
     const lead = await Lead.findById(leadId)
       .populate("assignedTo", "name email")
       .populate("createdBy", "name email");
 
-    if (!lead) {
-      return res.status(404).json({
-        success: false,
-        message: "Lead not found",
-      });
+    if (!lead) return res.status(404).json({ success: false, message: "Lead not found" });
+
+    // Access control: only admin or assigned/creator can view
+    if (req.user.role !== 'admin' && !(lead.assignedTo && lead.assignedTo._id.equals(req.user._id)) && !lead.createdBy._id.equals(req.user._id)) {
+      return res.status(403).json({ success: false, message: "Access denied" });
     }
 
     const leadDetails = {
@@ -96,30 +101,27 @@ exports.getLeadById = async (req, res) => {
       updatedAt: lead.updatedAt,
     };
 
-    res.status(200).json({
-      success: true,
-      data: leadDetails,
-    });
+    res.status(200).json({ success: true, data: leadDetails });
   } catch (error) {
     console.error("GET LEAD BY ID ERROR →", error);
-    res.status(500).json({
-      success: false,
-      message: "Server Error",
-    });
+    res.status(500).json({ success: false, message: "Server Error" });
   }
 };
 
-// Update lead
+// Update Lead (no change, uses existing role control)
 exports.updateLead = async (req, res) => {
   try {
     const { id } = req.body;
     if (!id) return res.status(400).json({ success: false, message: "Lead ID required" });
+
     const { error } = updateLeadSchema.validate(req.body, { abortEarly: false });
     if (error) {
       const messages = error.details.map(d => d.message);
       return res.status(400).json({ success: false, errors: messages });
     }
+
     const { status, remarks, assignedTo, source, name, phone, service, address } = req.body;
+
     const updatedLead = await Lead.findByIdAndUpdate(
       id,
       { status, remarks, assignedTo, source, name, phone, service, address, updatedAt: Date.now() },
@@ -129,6 +131,7 @@ exports.updateLead = async (req, res) => {
       .populate("createdBy", "name email");
 
     if (!updatedLead) return res.status(404).json({ success: false, message: "Lead not found" });
+
     res.status(200).json({ success: true, message: "Lead updated successfully", data: updatedLead });
   } catch (error) {
     console.error("Update Lead Error:", error);
@@ -136,7 +139,7 @@ exports.updateLead = async (req, res) => {
   }
 };
 
-// Delete lead
+// Delete Lead (Admin only, no change)
 exports.deleteLead = async (req, res) => {
   try {
     const { leadId } = req.body;
