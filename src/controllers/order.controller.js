@@ -19,10 +19,17 @@ exports.createOrder = async (req, res) => {
       });
     }
 
-    // 🔥 Payment logic
+    // Set totalAmount
+    value.totalAmount = value.quantity * value.priceAtOrderTime;
+
+    // Payment logic
     if (value.paymentMode !== "Partial Payment") {
       value.depositedAmount = 0;
       value.remainingAmount = 0;
+      value.paymentStatus = value.paymentMode === "COD" ? "Pending" : "Paid";
+    } else {
+      value.remainingAmount = value.totalAmount - (value.depositedAmount || 0);
+      value.paymentStatus = value.remainingAmount === 0 ? "Paid" : "Pending";
     }
 
     const order = new Order(value);
@@ -39,12 +46,11 @@ exports.createOrder = async (req, res) => {
   }
 };
 
-
 // GET ALL ORDERS
 exports.getOrders = async (req, res) => {
   try {
     const orders = await Order.find()
-      .populate("productId", "name price")
+      .populate("productId", "productName price")
       .populate("agentId", "name email")
       .sort({ createdAt: -1 });
 
@@ -55,7 +61,7 @@ exports.getOrders = async (req, res) => {
       orderStatus: o.orderStatus,
       paymentStatus: o.paymentStatus,
       paymentMode: o.paymentMode,
-      totalAmount: o.totalAmount,
+      totalAmount: o.totalAmount || o.quantity * o.priceAtOrderTime,
       createdAt: o.createdAt,
     }));
 
@@ -72,14 +78,16 @@ exports.getOrderById = async (req, res) => {
     const { orderId } = req.query;
 
     const order = await Order.findById(orderId)
-      .populate("productId", "name price")
+      .populate("productId", "productName price")
       .populate("agentId", "name email");
 
     if (!order) {
       return res.status(404).json({ success: false, message: "Order not found" });
     }
 
-    res.status(200).json({ success: true, data: order });
+    const totalAmount = order.totalAmount || order.quantity * order.priceAtOrderTime;
+
+    res.status(200).json({ success: true, data: { ...order.toObject(), totalAmount } });
   } catch (error) {
     console.error("GET ORDER ERROR →", error);
     res.status(500).json({ success: false, message: "Server error" });
@@ -87,138 +95,93 @@ exports.getOrderById = async (req, res) => {
 };
 
 // UPDATE ORDER
-
 exports.updateOrder = async (req, res) => {
   try {
     const { error, value } = updateOrderSchema.validate(req.body, {
       abortEarly: false,
       stripUnknown: true,
     });
+
     if (error) {
       return res.status(400).json({
         success: false,
         errors: error.details.map((e) => e.message),
       });
     }
+
     const { id, quantity, priceAtOrderTime, ...updateData } = value;
     const existingOrder = await Order.findById(id);
+
     if (!existingOrder) {
-      return res.status(404).json({
-        success: false,
-        message: "Order not found",
-      });
+      return res.status(404).json({ success: false, message: "Order not found" });
     }
-    if (
-      ["Delivered", "Cancelled", "Returned"].includes(
-        existingOrder.orderStatus
-      )
-    ) {
+
+    if (["Delivered", "Cancelled", "Returned"].includes(existingOrder.orderStatus)) {
       return res.status(400).json({
         success: false,
         message: `Cannot update a ${existingOrder.orderStatus} order`,
       });
     }
-    const finalQuantity =
-      quantity !== undefined ? quantity : existingOrder.quantity;
-    const finalPrice =
-      priceAtOrderTime !== undefined
-        ? priceAtOrderTime
-        : existingOrder.priceAtOrderTime;
+
+    const finalQuantity = quantity ?? existingOrder.quantity;
+    const finalPrice = priceAtOrderTime ?? existingOrder.priceAtOrderTime;
+
     if (finalQuantity <= 0 || finalPrice < 0) {
-      return res.status(400).json({
-        success: false,
-        message: "Invalid quantity or price",
-      });
+      return res.status(400).json({ success: false, message: "Invalid quantity or price" });
     }
+
     updateData.quantity = finalQuantity;
     updateData.priceAtOrderTime = finalPrice;
     updateData.totalAmount = finalQuantity * finalPrice;
-    const paymentMode =
-      updateData.paymentMode || existingOrder.paymentMode;
+
+    const paymentMode = updateData.paymentMode || existingOrder.paymentMode;
+
     if (paymentMode !== "Partial Payment") {
       updateData.paymentMode = paymentMode;
       updateData.depositedAmount = 0;
       updateData.remainingAmount = 0;
-      updateData.paymentStatus =
-        paymentMode === "COD" ? "Pending" : "Paid";
-    }
-    if (paymentMode === "Partial Payment") {
-      const deposited =
-        updateData.depositedAmount ??
-        existingOrder.depositedAmount ??
-        0;
-      if (deposited < 0) {
-        return res.status(400).json({
-          success: false,
-          message: "Deposited amount cannot be negative",
-        });
-      }
-      if (deposited > updateData.totalAmount) {
-        return res.status(400).json({
-          success: false,
-          message: "Deposited amount cannot exceed total amount",
-        });
-      }
-      const remaining =
-        updateData.remainingAmount ??
-        updateData.totalAmount - deposited;
-      if (remaining < 0) {
-        return res.status(400).json({
-          success: false,
-          message: "Remaining amount cannot be negative",
-        });
-      }
+      updateData.paymentStatus = paymentMode === "COD" ? "Pending" : "Paid";
+    } else {
+      const deposited = updateData.depositedAmount ?? existingOrder.depositedAmount ?? 0;
+      if (deposited < 0) return res.status(400).json({ success: false, message: "Deposited amount cannot be negative" });
+      if (deposited > updateData.totalAmount) return res.status(400).json({ success: false, message: "Deposited amount cannot exceed total amount" });
+
+      const remaining = updateData.remainingAmount ?? updateData.totalAmount - deposited;
+      if (remaining < 0) return res.status(400).json({ success: false, message: "Remaining amount cannot be negative" });
+
       updateData.paymentMode = "Partial Payment";
       updateData.depositedAmount = deposited;
       updateData.remainingAmount = remaining;
-      updateData.paymentStatus =
-        remaining === 0 ? "Paid" : "Pending";
+      updateData.paymentStatus = remaining === 0 ? "Paid" : "Pending";
     }
+
     if (updateData.orderStatus === "Delivered") {
       updateData.paymentStatus = "Paid";
       updateData.remainingAmount = 0;
     }
-    const updatedOrder = await Order.findByIdAndUpdate(
-      id,
-      updateData,
-      {
-        new: true,
-        runValidators: true,
-      }
-    )
-      .populate("productId", "name price")
+
+    const updatedOrder = await Order.findByIdAndUpdate(id, updateData, { new: true, runValidators: true })
+      .populate("productId", "productName price")
       .populate("agentId", "name email");
 
-    res.status(200).json({
-      success: true,
-      message: "Order updated successfully",
-      data: updatedOrder,
-    });
+    res.status(200).json({ success: true, message: "Order updated successfully", data: updatedOrder });
   } catch (err) {
     console.error("UPDATE ORDER ERROR →", err);
-    res.status(500).json({
-      success: false,
-      message: "Server error",
-    });
+    res.status(500).json({ success: false, message: "Server error" });
   }
 };
-
 
 // DELETE ORDER
 exports.deleteOrder = async (req, res) => {
   try {
     const { orderId } = req.body;
-
     const deletedOrder = await Order.findByIdAndDelete(orderId);
 
     if (!deletedOrder) {
       return res.status(404).json({ success: false, message: "Order not found" });
     }
 
-    res.status(200).json({
-      success: true,
-      message: "Order deleted successfully",
-    });
+    res.status(200).json({ success: true, message: "Order deleted successfully" });
   } catch (error) {
     console.error("DELETE ORDER ERROR →", error);
     res.status(500).json({ success: false, message: "Server error" });
