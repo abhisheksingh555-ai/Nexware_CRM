@@ -1,7 +1,7 @@
 const Lead = require("../models/Lead");
 const { createLeadSchema, updateLeadSchema } = require("../validations/lead.validation");
 
-// Create Lead
+// Create Lead (Non-admins can create, but won't see it afterwards unless assigned to them)
 exports.createLead = async (req, res) => {
   try {
     const { error } = createLeadSchema.validate(req.body, { abortEarly: false });
@@ -32,20 +32,16 @@ exports.createLead = async (req, res) => {
   }
 };
 
-// Get all leads (with access control)
+// Get all leads (RESTRICTED: Non-admin sees ONLY assigned leads)
 exports.getLeads = async (req, res) => {
   try {
     let query = {};
 
     // Admin can see all leads
     if (req.user.role !== 'admin') {
-      // Non-admin can see leads where they are assigned or they created it
-      query = {
-        $or: [
-          { assignedTo: req.user._id },
-          { createdBy: req.user._id }
-        ]
-      };
+      // Non-admin can ONLY see leads assigned to them.
+      // Removed { createdBy: req.user._id } so creators cannot view their own leads unless assigned.
+      query = { assignedTo: req.user._id };
     }
 
     const leads = await Lead.find(query)
@@ -68,7 +64,7 @@ exports.getLeads = async (req, res) => {
   }
 };
 
-// Get lead by ID (with access control)
+// Get lead by ID (RESTRICTED)
 exports.getLeadById = async (req, res) => {
   try {
     let { leadId } = req.query;
@@ -82,8 +78,12 @@ exports.getLeadById = async (req, res) => {
 
     if (!lead) return res.status(404).json({ success: false, message: "Lead not found" });
 
-    // Access control: only admin or assigned/creator can view
-    if (req.user.role !== 'admin' && !(lead.assignedTo && lead.assignedTo._id.equals(req.user._id)) && !lead.createdBy._id.equals(req.user._id)) {
+    // Access control:
+    // Admin: Can view all.
+    // Non-Admin: Can ONLY view if assignedTo matches their ID.
+    const isAssignedToUser = lead.assignedTo && lead.assignedTo._id.equals(req.user._id);
+    
+    if (req.user.role !== 'admin' && !isAssignedToUser) {
       return res.status(403).json({ success: false, message: "Access denied" });
     }
 
@@ -108,29 +108,62 @@ exports.getLeadById = async (req, res) => {
   }
 };
 
-// Update Lead (no change, uses existing role control)
+// Update Lead (RESTRICTED FIELDS for Non-Admin)
 exports.updateLead = async (req, res) => {
   try {
     const { id } = req.body;
     if (!id) return res.status(400).json({ success: false, message: "Lead ID required" });
 
-    const { error } = updateLeadSchema.validate(req.body, { abortEarly: false });
-    if (error) {
-      const messages = error.details.map(d => d.message);
-      return res.status(400).json({ success: false, errors: messages });
+    // 1. Fetch the existing lead first to check permissions
+    const existingLead = await Lead.findById(id);
+    if (!existingLead) return res.status(404).json({ success: false, message: "Lead not found" });
+
+    // 2. Check Permission to Update
+    const isAssignedToUser = existingLead.assignedTo && existingLead.assignedTo.toString() === req.user._id.toString();
+    
+    if (req.user.role !== 'admin' && !isAssignedToUser) {
+        return res.status(403).json({ success: false, message: "You are not authorized to update this lead." });
     }
 
-    const { status, remarks, assignedTo, source, name, phone, service, address } = req.body;
+    // 3. Prepare Update Data based on Role
+    let updateData = {};
+
+    if (req.user.role === 'admin') {
+        // Admin can update ALL fields
+        // Validate full schema if necessary, or manually map
+        const { error } = updateLeadSchema.validate(req.body, { abortEarly: false });
+        if (error) {
+             const messages = error.details.map(d => d.message);
+             return res.status(400).json({ success: false, errors: messages });
+        }
+        
+        const { status, remarks, assignedTo, source, name, phone, service, address } = req.body;
+        updateData = { status, remarks, assignedTo, source, name, phone, service, address };
+
+    } else {
+        // Non-Admin can ONLY update status and remarks
+        // We explicitly ignore other fields sent in req.body
+        const { status, remarks } = req.body;
+        
+        // Basic validation for these two fields if needed
+        if(!status && !remarks) {
+             return res.status(400).json({ success: false, message: "Nothing to update." });
+        }
+
+        if (status) updateData.status = status;
+        if (remarks) updateData.remarks = remarks;
+    }
+
+    // Add updated timestamp
+    updateData.updatedAt = Date.now();
 
     const updatedLead = await Lead.findByIdAndUpdate(
       id,
-      { status, remarks, assignedTo, source, name, phone, service, address, updatedAt: Date.now() },
+      updateData,
       { new: true }
     )
       .populate("assignedTo", "name email")
       .populate("createdBy", "name email");
-
-    if (!updatedLead) return res.status(404).json({ success: false, message: "Lead not found" });
 
     res.status(200).json({ success: true, message: "Lead updated successfully", data: updatedLead });
   } catch (error) {
@@ -139,11 +172,16 @@ exports.updateLead = async (req, res) => {
   }
 };
 
-// Delete Lead (Admin only, no change)
+// Delete Lead (Admin only)
 exports.deleteLead = async (req, res) => {
   try {
     const { leadId } = req.body;
     if (!leadId) return res.status(400).json({ success: false, message: "Lead ID required" });
+
+    // Ensure only admin can delete (Double check controller level permission)
+    if(req.user.role !== 'admin'){
+        return res.status(403).json({ success: false, message: "Access denied. Admin only." });
+    }
 
     const deletedLead = await Lead.findByIdAndDelete(leadId);
     if (!deletedLead) return res.status(404).json({ success: false, message: "Lead not found" });
