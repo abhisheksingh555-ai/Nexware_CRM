@@ -36,13 +36,13 @@ app.use(express.urlencoded({ extended: true }));
 app.use(cookieParser());
 
 // CORS (More secure)
-const allowedOrigins = [
-  "http://localhost:5173",
-];
-
 // const allowedOrigins = [
-//   "https://nexware-crm-frontend.vercel.app"
+//   "http://localhost:5173",
 // ];
+
+const allowedOrigins = [
+  "https://nexware-crm-frontend.vercel.app"
+];
 app.use(
   cors({
     origin: allowedOrigins,
