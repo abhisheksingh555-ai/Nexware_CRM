@@ -37,7 +37,6 @@ app.use(cookieParser());
 
 // CORS (More secure)
 const allowedOrigins = [
-  "http://localhost:5173",
   "https://nexware-crm-frontend.vercel.app",
 ];
 app.use(
