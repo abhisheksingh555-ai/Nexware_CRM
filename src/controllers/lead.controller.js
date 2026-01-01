@@ -1,4 +1,6 @@
 const Lead = require("../models/Lead");
+const XLSX = require("xlsx");
+const fs = require("fs");
 const { createLeadSchema, updateLeadSchema } = require("../validations/lead.validation");
 
 // Create Lead (Non-admins can create, but won't see it afterwards unless assigned to them)
@@ -190,5 +192,106 @@ exports.deleteLead = async (req, res) => {
   } catch (error) {
     console.error("Delete Lead Error:", error);
     res.status(500).json({ success: false, message: "Server Error" });
+  }
+};
+
+
+
+// Upload leads from Excel
+exports.uploadLeadsFromExcel = async (req, res) => {
+  try {
+    // 1. Check file
+    if (!req.file) {
+      return res.status(400).json({
+        success: false,
+        message: "Excel file is required",
+      });
+    }
+
+    // 2. Read Excel file
+    const workbook = XLSX.readFile(req.file.path);
+    const sheetName = workbook.SheetNames[0];
+    const sheetData = XLSX.utils.sheet_to_json(
+      workbook.Sheets[sheetName]
+    );
+
+    if (!sheetData.length) {
+      return res.status(400).json({
+        success: false,
+        message: "Excel file is empty",
+      });
+    }
+
+    let successCount = 0;
+    let failedCount = 0;
+    let errors = [];
+
+    // 3. Loop row by row
+    for (let i = 0; i < sheetData.length; i++) {
+      const row = sheetData[i];
+
+      // Required fields validation
+      if (!row.name || !row.phone || !row.service) {
+        failedCount++;
+        errors.push({
+          row: i + 2, // +2 because Excel header + index
+          error: "name, phone and service are required",
+        });
+        continue;
+      }
+
+      // 4. Duplicate check (phone)
+      const existingLead = await Lead.findOne({ phone: row.phone });
+      if (existingLead) {
+        failedCount++;
+        errors.push({
+          row: i + 2,
+          error: "Duplicate phone number",
+        });
+        continue;
+      }
+
+      // 5. Create lead document
+      const lead = new Lead({
+        name: row.name,
+        phone: row.phone,
+        service: row.service,
+        address: row.address || "",
+        source: row.source || "Excel",
+        status: row.status || "Ring",
+        remarks: row.remarks || "",
+        createdBy: req.user._id,
+      });
+
+      // 6. Save one by one
+      await lead.save();
+      successCount++;
+    }
+
+    // 7. Remove uploaded Excel file
+    fs.unlinkSync(req.file.path);
+
+    // 8. Final response
+    res.status(200).json({
+      success: true,
+      message: "Excel processed successfully",
+      total: sheetData.length,
+      inserted: successCount,
+      failed: failedCount,
+      errors,
+    });
+
+  } catch (error) {
+    console.error("Excel Upload Error:", error);
+
+    if (req.file) {
+      fs.unlinkSync(req.file.path);
+    }
+
+    res.status(500).json({
+      success: false,
+      message: "Failed to upload Excel",
+      error: error.message,
+    });
   }
 };

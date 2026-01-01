@@ -5,6 +5,7 @@ const auth = require("../middleware/authMiddleware");
 const role = require("../middleware/roleMiddleware"); 
 const validate = require("../middleware/validate.middleware");
 const { createLeadSchema, updateLeadSchema } = require("../validations/lead.validation");
+const uploadExcel = require("../middleware/uploadExcel");
 
 // Create lead (Admin, SubAdmin, TeamHead, Agent)
 router.post(
@@ -14,6 +15,16 @@ router.post(
   validate(createLeadSchema), 
   leadController.createLead
 );
+
+// Upload leads via Excel (Admin, SubAdmin, TeamHead)
+router.post(
+  "/upload-leads-excel",
+  auth,
+  role(["admin"]),
+  uploadExcel.single("excel"),
+  leadController.uploadLeadsFromExcel
+);
+
 
 // Get all leads (all roles)
 router.get(
