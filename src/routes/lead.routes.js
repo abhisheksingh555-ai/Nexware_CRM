@@ -21,7 +21,7 @@ router.post(
   "/upload-leads-excel",
   auth,
   role(["admin"]),
-  uploadExcel.single("excel"),
+  uploadExcel,
   leadController.uploadLeadsFromExcel
 );
 

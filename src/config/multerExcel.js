@@ -1,30 +1,26 @@
 const multer = require("multer");
-const path = require("path");
 
-const storage = multer.diskStorage({
-  destination: (req, file, cb) => {
-    cb(null, "uploads/excel/");
+/**
+ * Vercel-safe Excel upload
+ * Uses memory storage (Buffer)
+ */
+const multerExcel = multer({
+  storage: multer.memoryStorage(),
+  limits: {
+    fileSize: 5 * 1024 * 1024, // 5MB
   },
-  filename: (req, file, cb) => {
-    cb(null, `${Date.now()}${path.extname(file.originalname)}`);
+  fileFilter: (req, file, cb) => {
+    const allowedMimeTypes = [
+      "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+      "application/vnd.ms-excel",
+    ];
+
+    if (allowedMimeTypes.includes(file.mimetype)) {
+      cb(null, true);
+    } else {
+      cb(new Error("Only Excel files (.xlsx, .xls) are allowed"));
+    }
   },
 });
 
-const fileFilter = (req, file, cb) => {
-  const allowed = /xlsx|xls/;
-  const ext = path.extname(file.originalname).toLowerCase();
-
-  if (allowed.test(ext)) {
-    cb(null, true);
-  } else {
-    cb(new Error("Only Excel files are allowed (.xlsx, .xls)"));
-  }
-};
-
-const uploadExcel = multer({
-  storage,
-  fileFilter,
-  limits: { fileSize: 5 * 1024 * 1024 }, // 5MB
-});
-
-module.exports = uploadExcel;
+module.exports = multerExcel;

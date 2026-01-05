@@ -1,6 +1,5 @@
 const Lead = require("../models/Lead");
 const XLSX = require("xlsx");
-const fs = require("fs");
 const { createLeadSchema, updateLeadSchema } = require("../validations/lead.validation");
 
 // Create Lead (Non-admins can create, but won't see it afterwards unless assigned to them)
@@ -208,11 +207,12 @@ exports.uploadLeadsFromExcel = async (req, res) => {
       });
     }
 
-    // 2. Read Excel file
-    const workbook = XLSX.readFile(req.file.path);
+    // 2. Read Excel from BUFFER (IMPORTANT)
+    const workbook = XLSX.read(req.file.buffer, { type: "buffer" });
     const sheetName = workbook.SheetNames[0];
     const sheetData = XLSX.utils.sheet_to_json(
-      workbook.Sheets[sheetName]
+      workbook.Sheets[sheetName],
+      { defval: "" } // prevents undefined values
     );
 
     if (!sheetData.length) {
@@ -224,37 +224,25 @@ exports.uploadLeadsFromExcel = async (req, res) => {
 
     let successCount = 0;
     let failedCount = 0;
-    let errors = [];
+    const errors = [];
+    const leadsToInsert = [];
 
-    // 3. Loop row by row
+    // 3. Validate rows
     for (let i = 0; i < sheetData.length; i++) {
       const row = sheetData[i];
 
-      // Required fields validation
       if (!row.name || !row.phone || !row.service) {
         failedCount++;
         errors.push({
-          row: i + 2, // +2 because Excel header + index
+          row: i + 2,
           error: "name, phone and service are required",
         });
         continue;
       }
 
-      // 4. Duplicate check (phone)
-      const existingLead = await Lead.findOne({ phone: row.phone });
-      if (existingLead) {
-        failedCount++;
-        errors.push({
-          row: i + 2,
-          error: "Duplicate phone number",
-        });
-        continue;
-      }
-
-      // 5. Create lead document
-      const lead = new Lead({
+      leadsToInsert.push({
         name: row.name,
-        phone: row.phone,
+        phone: row.phone.toString().trim(),
         service: row.service,
         address: row.address || "",
         source: row.source || "Excel",
@@ -262,17 +250,34 @@ exports.uploadLeadsFromExcel = async (req, res) => {
         remarks: row.remarks || "",
         createdBy: req.user._id,
       });
-
-      // 6. Save one by one
-      await lead.save();
-      successCount++;
     }
 
-    // 7. Remove uploaded Excel file
-    fs.unlinkSync(req.file.path);
+    // 4. Remove duplicate phones (DB level)
+    const phones = leadsToInsert.map(l => l.phone);
+    const existingLeads = await Lead.find({ phone: { $in: phones } }).select("phone");
 
-    // 8. Final response
-    res.status(200).json({
+    const existingPhones = new Set(existingLeads.map(l => l.phone));
+
+    const finalLeads = leadsToInsert.filter(l => {
+      if (existingPhones.has(l.phone)) {
+        failedCount++;
+        errors.push({
+          phone: l.phone,
+          error: "Duplicate phone number",
+        });
+        return false;
+      }
+      return true;
+    });
+
+    // 5. Bulk insert (FAST & SAFE)
+    if (finalLeads.length > 0) {
+      await Lead.insertMany(finalLeads, { ordered: false });
+      successCount = finalLeads.length;
+    }
+
+    // 6. Response
+    return res.status(200).json({
       success: true,
       message: "Excel processed successfully",
       total: sheetData.length,
@@ -284,14 +289,11 @@ exports.uploadLeadsFromExcel = async (req, res) => {
   } catch (error) {
     console.error("Excel Upload Error:", error);
 
-    if (req.file) {
-      fs.unlinkSync(req.file.path);
-    }
-
-    res.status(500).json({
+    return res.status(500).json({
       success: false,
       message: "Failed to upload Excel",
       error: error.message,
     });
   }
 };
+
