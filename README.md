@@ -8,12 +8,24 @@ Nexware_CRM is a lightweight, customizable Customer Relationship Management (CRM
 
 # Create a `.env` file and define the following:
 
-- PORT = ADD_YOUR_PORT
-- MONGO_URI = YOU_MONGODB_URL
-- JWT_SECRET  = your_jwt_secret_key_here
--  JWT_EXPIRE = YOUR_EXPIRE
-- DEVELOPER_SECRET = YOUR_DEVELOPMENT_KEY
-- NODE_ENV = PRODUCTION
+# Server Configuration
+PORT=5000
+NODE_ENV=PRODUCTION
+
+# Database
+MONGO_URI=YOUR_MONGODB_URL
+
+# Authentication
+JWT_SECRET=your_jwt_secret_key_here
+JWT_EXPIRE=7d
+
+# Developer Access
+DEVELOPER_SECRET=YOUR_DEVELOPMENT_KEY
+
+# Cloudinary Configuration
+CLOUDINARY_NAME=YOUR_CLOUDINARY_NAME
+CLOUDINARY_KEY=YOUR_CLOUDINARY_KEY
+CLOUDINARY_SECRET=YOUR_CLOUDINARY_SECRET
  
 
 ---
